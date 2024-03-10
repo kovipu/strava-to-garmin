@@ -2,34 +2,65 @@
 import Prelude
 import System.Environment
 import System.Exit
-import Data.Array ((!))
 import Data.Either
-import Text.RawString.QQ
-import Text.Parsec
-import Text.Parsec.Text
+import Text.XML.Light
 
-main = getArgs >>= parseArgs >>= readFile >>= (report . parse fileParser "")
+-- Parse relevant data from a .tcx file exported from Strava for Garmin import.
+-- Assumes the .tcx is in Technogym's format, 1 lap only.
+
+main = getArgs >>= parseArgs >>= readFile >>= (print . parseFile)
 
 parseArgs [f] = pure f
 parseArgs []  = putStrLn "Enter the filename of the input."                         >> exitFailure
 parseArgs _   = putStrLn "Invalid arguments, input only the filename of the input." >> exitFailure
 
-fileParser = do
-  many space
-  string "<?xml version='1.0' encoding='utf8'?>"
-  manyTill anyChar $ try $ string "<Activities>"
-  activities <- manyTill anyChar $ try $ string "</Activities>"
-  pure $ [r|<?xml version="1.0" encoding="UTF-8" ?>
-<TrainingCenterDatabase
-  xsi:schemaLocation="http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2 http://www.garmin.com/xmlschemas/TrainingCenterDatabasev2.xsd"
-  xmlns:ns5="http://www.garmin.com/xmlschemas/ActivityGoals/v1"
-  xmlns:ns3="http://www.garmin.com/xmlschemas/ActivityExtension/v2"
-  xmlns:ns2="http://www.garmin.com/xmlschemas/UserProfile/v2"
-  xmlns="http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2"
-  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:ns4="http://www.garmin.com/xmlschemas/ProfileExtension/v1">
-    <Activities>|]
-    ++ activities
-    ++ "</Activities></TrainingCenterDatabase>"
+data Activity = Activity
+  { startTime :: String
+  , totalTimeSeconds :: Int
+  , totalDistanceMeters :: Int
+  , calories :: Int
+  , trackpoints :: [TrackPoint]
+  } deriving Show
+
+data TrackPoint = TrackPoint
+  { time :: String
+  , distanceMeters :: Float
+  , cadence :: Int
+  , watts :: Int
+  , heartRateBpm :: Int
+  } deriving Show
+
+parseFile source = do
+  let
+    garmin_qURI = "http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2"
+    activity_qURI = "http://www.garmin.com/xmlschemas/ActivityExtension/v2"
+    garminQName s = QName s (Just garmin_qURI) Nothing
+    activityQName s = QName s (Just activity_qURI) Nothing
+    simpleQName s = QName s Nothing Nothing
+
+    intContent = read . strContent
+
+    contents = parseXML source
+    activity = head $ (findElements (garminQName "Activity")) `concatMap` onlyElems contents
+
+  lap <- findElement (garminQName "Lap") activity
+
+  startTime <- findAttr (simpleQName "StartTime") lap
+
+  totalTimeSeconds <- intContent <$> findElement (garminQName "TotalTimeSeconds") lap
+  totalDistanceMeters <- intContent <$> findElement (garminQName "DistanceMeters") lap
+  calories <- intContent <$> findElement (garminQName "Calories") lap
+  track <- elChildren <$> findElement (garminQName "Track") lap
+  trackpoints <- traverse (\t -> do
+      time <- strContent <$> findElement (garminQName "Time") t
+      distanceMeters <- (read . strContent) <$> findElement (garminQName "DistanceMeters") t
+      cadence <- intContent <$> findElement (garminQName "Cadence") t
+      watts <- intContent <$> (findElement (activityQName "TPX") t >>= findElement (activityQName "Watts"))
+      heartRateBpm <- intContent <$> (findElement (garminQName "HeartRateBpm") t >>= findElement (garminQName "Value"))
+      pure TrackPoint { time, distanceMeters, cadence, watts, heartRateBpm }
+    ) track
+
+  pure Activity { startTime, totalTimeSeconds, totalDistanceMeters, calories, trackpoints }
 
 report (Left err) = putStrLn ("Error: Failed to parse file, ") >> exitFailure
 report (Right res) = putStrLn res >> exitSuccess
