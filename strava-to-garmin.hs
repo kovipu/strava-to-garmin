@@ -34,31 +34,37 @@ parseFile source = do
   let
     garmin_qURI = "http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2"
     activity_qURI = "http://www.garmin.com/xmlschemas/ActivityExtension/v2"
-    garminQName s = QName s (Just garmin_qURI) Nothing
-    activityQName s = QName s (Just activity_qURI) Nothing
-    simpleQName s = QName s Nothing Nothing
 
     intContent = read . strContent
 
+    fnd n = findElement (QName n (Just garmin_qURI) Nothing)
+    fndActivity n = findElement (QName n (Just activity_qURI) Nothing)
+    fndInt n l = do
+      el <- fnd n l
+      pure $ intContent el
+
     contents = parseXML source
-    activity = head $ (findElements (garminQName "Activity")) `concatMap` onlyElems contents
+    activity = head $ (findElements (QName "Activity" (Just garmin_qURI) Nothing)) `concatMap` onlyElems contents
 
-  lap <- findElement (garminQName "Lap") activity
+  lap <- fnd "Lap" activity
 
-  startTime <- findAttr (simpleQName "StartTime") lap
+  startTime <- findAttr (QName "StartTime" Nothing Nothing) lap
 
-  totalTimeSeconds <- intContent <$> findElement (garminQName "TotalTimeSeconds") lap
-  totalDistanceMeters <- intContent <$> findElement (garminQName "DistanceMeters") lap
-  calories <- intContent <$> findElement (garminQName "Calories") lap
-  track <- elChildren <$> findElement (garminQName "Track") lap
-  trackpoints <- traverse (\t -> do
-      time <- strContent <$> findElement (garminQName "Time") t
-      distanceMeters <- (read . strContent) <$> findElement (garminQName "DistanceMeters") t
-      cadence <- intContent <$> findElement (garminQName "Cadence") t
-      watts <- intContent <$> (findElement (activityQName "TPX") t >>= findElement (activityQName "Watts"))
-      heartRateBpm <- intContent <$> (findElement (garminQName "HeartRateBpm") t >>= findElement (garminQName "Value"))
+  totalTimeSeconds <- fndInt "TotalTimeSeconds" lap
+  totalDistanceMeters <- fndInt "DistanceMeters" lap
+  calories <- fndInt "Calories" lap
+  track <- elChildren <$> fnd "Track" lap
+
+  let
+    parseTrackPoint t = do
+      time <- strContent <$> fnd "Time" t
+      distanceMeters <- read . strContent <$> fnd "DistanceMeters" t
+      cadence <- fndInt "Cadence" t
+      watts <- intContent <$> (fndActivity "TPX" t >>= fndActivity "Watts")
+      heartRateBpm <- intContent <$> (fnd "HeartRateBpm" t >>= fnd "Value")
       pure TrackPoint { time, distanceMeters, cadence, watts, heartRateBpm }
-    ) track
+
+  trackpoints <- traverse parseTrackPoint track
 
   pure Activity { startTime, totalTimeSeconds, totalDistanceMeters, calories, trackpoints }
 
